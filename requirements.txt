@@ -1,0 +1,3 @@
+Twisted
+mysql-connector-python
+DBUtils
