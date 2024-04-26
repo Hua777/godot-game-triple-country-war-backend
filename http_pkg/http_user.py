@@ -5,26 +5,23 @@ import http_tool
 from mysql_tool import MYSQL_TOOL
 
 
+def save_user_online_tag(account, host, port, online):
+    MYSQL_TOOL.execute_update(
+        f"""
+        update tcwb_user set online = {online}, host = '{host}', port = {port} where account = '{account}'
+        """
+    )
+
+
 class HttpAuthResource(resource.Resource):
     """
     获取登录信息
     """
 
     def render_GET(self, request: server.Request):
-        token = http_tool.get_token(request)
-        token_in_db = MYSQL_TOOL.execute_query_one(
-            f"""
-            select * from tcwb_user_token where token = '{token}' and expired_time >= now()
-            """
-        )
-        if token_in_db is not None:
-            user_in_db = MYSQL_TOOL.execute_query_one(
-                f"""
-                select * from tcwb_user where account = '{token_in_db['user_account']}'
-                """
-            )
+        user_in_db = http_tool.get_user_info_from_request(request)
+        if user_in_db is not None:
             response = {"data": user_in_db}
-            request.setResponseCode(200)
         else:
             response = {
                 "msg": "请先登录",
@@ -66,13 +63,20 @@ class HttpAuthResource(resource.Resource):
     """
 
     def render_PUT(self, request: server.Request):
-        body = json.loads(request.content.read().decode("utf-8"))
-        MYSQL_TOOL.execute_update(
-            f"""
-            update tcwb_user username = '{body['username']}' where account = '{body['account']}'
-            """
-        )
-        response = {}
+        user_in_db = http_tool.get_user_info_from_request(request)
+        if user_in_db is not None:
+            body = json.loads(request.content.read().decode("utf-8"))
+            MYSQL_TOOL.execute_update(
+                f"""
+                update tcwb_user username = '{body['username']}' where account = '{user_in_db['account']}'
+                """
+            )
+            response = {}
+        else:
+            response = {
+                "msg": "请先登录",
+            }
+            request.setResponseCode(401)
         request.setHeader(b"Content-Type", b"application/json")
         request.write(json.dumps(response, default=str).encode())
         return b""
