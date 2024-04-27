@@ -1,35 +1,24 @@
 import json
 import uuid
 
-from twisted.internet import protocol
+from autobahn.twisted.websocket import WebSocketServerProtocol
 
-from http_pkg.http_user import save_user_online_tag
+from http_pkg.http_user import save_user_online_tag, get_user
 from http_pkg.http_room import (
     create_room,
     create_room_user,
     set_room_role_count,
     set_room_master,
     get_room,
+    set_room_close,
 )
 
-SPLIT_STR = "[SPLIT]"
 
-
-def make_msg(info: dict, msg_id: str = None, command: str = "ack") -> bytes:
-    if msg_id is None:
-        msg_id = str(uuid.uuid4())
-    msg = f"{msg_id}{SPLIT_STR}{command}{SPLIT_STR}{json.dumps(info)}"
-    return msg.encode("utf-8")
-
-
-def parse_msg(data: bytes) -> tuple[str, str, dict]:
+def parse_msg(data: bytes) -> tuple[str, str, str, dict]:
     data_decode = data.decode("utf-8")
-    print("received message:", data_decode)
-    split_array = data_decode.split(SPLIT_STR)
-    msg_id = split_array[0]
-    command = split_array[1]
-    value = split_array[2]
-    return (msg_id, command, json.loads(value))
+    print("[websocket] received message:", data_decode)
+    value = json.loads(data_decode)
+    return (value["msg_id"], value["mode"], value["command"], value)
 
 
 class Room:
@@ -54,130 +43,285 @@ class Room:
 room_map: dict[str, Room] = {}
 
 
-class TcbwSocketProtocol(protocol.Protocol):
-    def __init__(self, addr) -> None:
+class TcbwSocketProtocol(WebSocketServerProtocol):
+    def __init__(self) -> None:
         super().__init__()
-        self.addr = addr
         self.account: str = None
         self.room: Room = None
 
-    def connectionMade(self):
+    def onConnect(self, request):
+        self.host = request.host
+
+    def onOpen(self):
         pass
 
-    def write(self, info: dict, msg_id: str = None, command: str = "ack"):
-        self.transport.write(make_msg(info, msg_id, command))
-
-    def create_room(self, msg_id: str, info: dict):
-        create_room(
-            info["room_id"],
-            self.account,
-            info["room_name"],
-            info["room_password"],
-        )
-        self.room = Room(info["room_id"])
-        room_map[self.room.id] = self.room
-        self.room.add_user(self)
-
-    def join_room(self, msg_id: str, info: dict):
-        room_in_db = get_room(info["room_id"])
-        if room_in_db["password"] == info["input_room_password"]:
-            self.room = room_map[info["room_id"]]
-            for user_socket in self.room.user_sockets:
-                # 广播通知房间有人进来
-                user_socket.write(
-                    {
-                        "account": self.account,
-                    },
-                    command="user-join",
-                )
-            self.room.add_user(self)
-            if msg_id is not None:
-                self.write(
-                    {
-                        "msg": "加入房间成功",
-                    },
-                    msg_id=msg_id,
-                )
-        else:
-            if msg_id is not None:
-                self.write(
-                    {
-                        "msg": "密码错误无法加入",
-                    },
-                    msg_id=msg_id,
-                )
-
-    def leave_room(self, msg_id: str, info: dict):
-        if self.room is not None:
-            self.room.remove_user(self)
-            if self.room.is_empty():
-                # 房间没人了，删除房间
-                del room_map[self.room.id]
-            else:
-                # 设置新房主
-                new_master = self.room.get_any_user()
-                set_room_master(self.room.id, new_master.account)
-                for user_socket in self.room.user_sockets:
-                    # 广播通知房间有人离开
-                    user_socket.write(
-                        {
-                            "account": self.account,
-                        },
-                        command="user-leave",
-                    )
-                    # 广播通知换房主
-                    user_socket.write(
-                        {
-                            "account": new_master.account,
-                        },
-                        command="change-master-to",
-                    )
-            self.room = None
-            if msg_id is not None:
-                self.write(
-                    {
-                        "msg": "离开房间成功",
-                    },
-                    msg_id=msg_id,
-                )
-        else:
-            if msg_id is not None:
-                self.write(
-                    {
-                        "msg": "不在房间里",
-                    },
-                    msg_id=msg_id,
-                )
-
-    def online_game(self, msg_id: str, info: dict):
-        self.account = info["account"]
-        save_user_online_tag(self.account, self.addr.host, self.addr.port, True)
-        self.write(
-            {},
-            msg_id=msg_id,
-        )
-
-    def dataReceived(self, data: bytes):
-        try:
-            (msg_id, command, info) = parse_msg(data)
+    def onMessage(self, payload: bytes, isBinary):
+        (msg_id, mode, command, info) = parse_msg(payload)
+        if mode == "request":
             if command == "online":
                 self.online_game(msg_id, info)
             elif command == "create-room":
                 self.create_room(msg_id, info)
             elif command == "join-room":
                 self.join_room(msg_id, info)
+            elif command == "room-info":
+                self.room_info(msg_id, info)
             elif command == "leave-room":
                 self.leave_room(msg_id, info)
-        except Exception as ex:
-            print("data received error:", ex)
+            elif command == "kick-out-user-from-room":
+                self.kick_out_user_from_room(msg_id, info)
+            elif command == "change-room-property":
+                self.change_room_property(msg_id, info)
 
-    def connectionLost(self, reason):
-        self.leave_room()
+    def onClose(self, wasClean, code, reason):
         if self.account is not None:
-            print(f"{self.account} exit game, reason: {reason}")
-            save_user_online_tag(self.account, self.addr.host, self.addr.port, False)
+            print(f"[websocket] {self.account} exit game, reason: {reason}")
+            self.leave_room()
+            save_user_online_tag(self.account, self.host, False)
 
+    def send_ack(self, command: str, msg_id: str, info: dict):
+        info["msg_id"] = msg_id
+        info["mode"] = "response"
+        info["command"] = command
+        print(f"[websocket] ack message {info}")
+        self.sendMessage(json.dumps(info, default=str).encode("utf-8"), False)
 
-class TcbwSocketFactory(protocol.Factory):
-    def buildProtocol(self, addr):
-        return TcbwSocketProtocol(addr)
+    def send_command(self, command: str, info: dict):
+        info["msg_id"] = str(uuid.uuid4())
+        info["mode"] = "request"
+        info["command"] = command
+        info["command"] = command
+        print(f"[websocket] send message {info}")
+        self.sendMessage(json.dumps(info, default=str).encode("utf-8"), False)
+
+    def online_game(self, msg_id: str, info: dict):
+        self.account = info["account"]
+        save_user_online_tag(self.account, self.host, True)
+        self.send_ack(
+            "online",
+            msg_id,
+            {
+                "msg": "上线成功",
+            },
+        )
+
+    def create_room(self, msg_id: str, info: dict):
+        msg = ""
+        try:
+            create_room(
+                info["room_id"],
+                self.account,
+                info["room_name"],
+                info["room_password"],
+            )
+            self.room = Room(info["room_id"])
+            room_map[self.room.id] = self.room
+            self.room.add_user(self)
+        except Exception as ex:
+            msg = "创建房间失败"
+        self.send_ack(
+            "create-room",
+            msg_id,
+            {
+                "msg": msg,
+            },
+        )
+
+    def join_room(self, msg_id: str, info: dict):
+        room_in_db = get_room(info["room_id"])
+        if int(room_in_db["password"]) == int(info["input_room_password"]):
+            if info["room_id"] in room_map:
+                self.room = room_map[info["room_id"]]
+                for user_socket in self.room.user_sockets:
+                    # 广播通知房间有人进来
+                    user_socket.send_command(
+                        "user-join",
+                        {
+                            "account": self.account,
+                        },
+                    )
+                self.room.add_user(self)
+                if msg_id is not None:
+                    self.send_ack(
+                        "join-room",
+                        msg_id,
+                        {},
+                    )
+            else:
+                if msg_id is not None:
+                    self.send_ack(
+                        "join-room",
+                        msg_id,
+                        {
+                            "msg": "房间不存在",
+                        },
+                    )
+        else:
+            if msg_id is not None:
+                self.send_ack(
+                    "join-room",
+                    msg_id,
+                    {
+                        "msg": "密码错误无法加入",
+                    },
+                )
+
+    def room_info(self, msg_id: str = None, info: dict = {}):
+        if self.room is not None:
+            response = {"room": get_room(self.room.id), "users": {}}
+            for user_socket in self.room.user_sockets:
+                response["users"][user_socket.account] = get_user(user_socket.account)
+            if msg_id is not None:
+                self.send_ack(
+                    "room-info",
+                    msg_id,
+                    response,
+                )
+        else:
+            if msg_id is not None:
+                self.send_ack(
+                    "room-info",
+                    msg_id,
+                    {
+                        "msg": "不在房间里",
+                    },
+                )
+
+    def leave_room(self, msg_id: str = None, info: dict = {}):
+        if self.room is not None:
+            self.room.remove_user(self)
+            if self.room.is_empty():
+                # 房间没人了，删除房间
+                del room_map[self.room.id]
+                set_room_close(self.room.id)
+            else:
+                for user_socket in self.room.user_sockets:
+                    # 广播通知房间有人离开
+                    user_socket.send_command(
+                        "user-leave",
+                        {
+                            "account": self.account,
+                        },
+                    )
+                # 设置新房主
+                room_in_db = get_room(self.room.id)
+                if room_in_db["master_account"] == self.account:
+                    new_master = self.room.get_any_user()
+                    set_room_master(self.room.id, new_master.account)
+                    for user_socket in self.room.user_sockets:
+                        # 广播通知换房主
+                        user_socket.send_command(
+                            "change-master-to",
+                            {
+                                "account": new_master.account,
+                            },
+                        )
+            self.room = None
+            if msg_id is not None:
+                self.send_ack(
+                    "leave-room",
+                    msg_id,
+                    {},
+                )
+        else:
+            if msg_id is not None:
+                self.send_ack(
+                    "leave-room",
+                    msg_id,
+                    {
+                        "msg": "不在房间里",
+                    },
+                )
+
+    def kick_out_user_from_room(self, msg_id: str = None, info: dict = {}):
+        if self.room is not None:
+            room_in_db = get_room(self.room.id)
+            if (
+                room_in_db["master_account"] == self.account
+                and self.account != info["account"]
+            ):
+                target_user_socket = None
+                for user_socket in self.room.user_sockets:
+                    if user_socket.account == info["account"]:
+                        target_user_socket = user_socket
+                        break
+                if target_user_socket is not None:
+                    self.room.remove_user(target_user_socket)
+                    target_user_socket.room = None
+                    for user_socket in self.room.user_sockets:
+                        # 广播通知房间有人离开
+                        user_socket.send_command(
+                            "user-leave",
+                            {
+                                "account": target_user_socket.account,
+                            },
+                        )
+                    # 通知这个人离开房间
+                    target_user_socket.send_command(
+                        "kick-out",
+                        {},
+                    )
+                if msg_id is not None:
+                    self.send_ack(
+                        "kick-out-user-from-room",
+                        msg_id,
+                        {},
+                    )
+            else:
+                if msg_id is not None:
+                    self.send_ack(
+                        "kick-out-user-from-room",
+                        msg_id,
+                        {
+                            "msg": "你不是管理员",
+                        },
+                    )
+        else:
+            if msg_id is not None:
+                self.send_ack(
+                    "kick-out-user-from-room",
+                    msg_id,
+                    {
+                        "msg": "不在房间里",
+                    },
+                )
+
+    def change_room_property(self, msg_id: str = None, info: dict = {}):
+        if self.room is not None:
+            room_in_db = get_room(self.room.id)
+            if room_in_db["master_account"] == self.account:
+                set_room_role_count(
+                    self.room.id,
+                    info["loyal_count"],
+                    info["traitor_count"],
+                    info["rebel_count"],
+                )
+                for user_socket in self.room.user_sockets:
+                    user_socket.send_command(
+                        "room-property-changed",
+                        {},
+                    )
+                if msg_id is not None:
+                    self.send_ack(
+                        "change-room-property",
+                        msg_id,
+                        {},
+                    )
+            else:
+                if msg_id is not None:
+                    self.send_ack(
+                        "change-room-property",
+                        msg_id,
+                        {
+                            "msg": "你不是管理员",
+                        },
+                    )
+        else:
+            if msg_id is not None:
+                self.send_ack(
+                    "change-room-property",
+                    msg_id,
+                    {
+                        "msg": "不在房间里",
+                    },
+                )

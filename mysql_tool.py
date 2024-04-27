@@ -13,8 +13,8 @@ class MySQLTool:
             database=database,
         )
 
-    def execute_query(self, query, params=None):
-        print(f"[execute query] {query}")
+    def execute_query(self, query: str, params=None):
+        print(f"[execute query] {query.strip().replace('\n', '').replace('  ', ' ')}")
         conn = self.pool.connection()
         cursor = conn.cursor(dictionary=True)
         cursor.execute(query, params)
@@ -23,8 +23,8 @@ class MySQLTool:
         conn.close()
         return result
 
-    def execute_query_one(self, query, params=None):
-        print(f"[execute query] {query}")
+    def execute_query_one(self, query: str, params=None):
+        print(f"[execute query] {query.strip().replace('\n', '').replace('  ', ' ')}")
         conn = self.pool.connection()
         cursor = conn.cursor(dictionary=True)
         cursor.execute(query, params)
@@ -33,8 +33,8 @@ class MySQLTool:
         conn.close()
         return result
 
-    def execute_update(self, query, params=None):
-        print(f"[execute query] {query}")
+    def execute_update(self, query: str, params=None):
+        print(f"[execute query] {query.strip().replace('\n', '').replace('  ', ' ')}")
         conn = self.pool.connection()
         cursor = conn.cursor(dictionary=True)
         cursor.execute(query, params)

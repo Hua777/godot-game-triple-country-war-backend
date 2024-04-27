@@ -5,10 +5,18 @@ import http_tool
 from mysql_tool import MYSQL_TOOL
 
 
-def save_user_online_tag(account, host, port, online):
+def save_user_online_tag(account, host, online):
     MYSQL_TOOL.execute_update(
         f"""
-        update tcwb_user set online = {online}, host = '{host}', port = {port} where account = '{account}'
+        update tcwb_user set online = {online}, host = '{host}' where account = '{account}'
+        """
+    )
+
+
+def get_user(account):
+    return MYSQL_TOOL.execute_query_one(
+        f"""
+        select * from tcwb_user where account = '{account}'
         """
     )
 
