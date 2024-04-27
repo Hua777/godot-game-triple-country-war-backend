@@ -11,6 +11,10 @@ def create_room(id, master_account, name, password):
     )
 
 
+def get_room(id):
+    return MYSQL_TOOL.execute_query_one(f"select * from tcwb_room where id = '{id}'")
+
+
 def set_room_master(id, master_account):
     MYSQL_TOOL.execute_update(
         f"update tcwb_room set master_account = '{master_account}' where id = '{id}'"
@@ -30,7 +34,7 @@ def create_room_user(room_id, user_accounts: list):
         )
 
 
-class HttpRoomResource(resource.Resource):
+class HttpPageResource(resource.Resource):
     def __init__(self):
         resource.Resource.__init__(self)
 
@@ -42,8 +46,14 @@ class HttpRoomResource(resource.Resource):
         user_in_db = http_tool.get_user_info_from_request(request)
         if user_in_db is not None:
             offset, _, size = http_tool.get_page_info_from_request(request)
+            query_dict = http_tool.get_query_dict_from_request(request)
+            key_query = (
+                f"and (id like '%{query_dict['key']}%' or name like '%{query_dict['key']}%')"
+                if "key" in query_dict and query_dict["key"] != ""
+                else ""
+            )
             room_list_in_db = MYSQL_TOOL.execute_query(
-                f"select * from tcwb_room order by create_time desc limit {offset}, {size}"
+                f"select * from tcwb_room where 1 = 1 {key_query} order by create_time desc limit {offset}, {size}"
             )
             response = {
                 "data": room_list_in_db,
@@ -55,6 +65,12 @@ class HttpRoomResource(resource.Resource):
         request.setHeader(b"Content-Type", b"application/json")
         request.write(json.dumps(response, default=str).encode())
         return b""
+
+
+class HttpRoomResource(resource.Resource):
+    def __init__(self):
+        resource.Resource.__init__(self)
+        self.putChild(b"page", HttpPageResource())
 
 
 def install(root: resource.Resource):

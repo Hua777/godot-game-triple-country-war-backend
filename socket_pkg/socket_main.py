@@ -9,9 +9,27 @@ from http_pkg.http_room import (
     create_room_user,
     set_room_role_count,
     set_room_master,
+    get_room,
 )
 
 SPLIT_STR = "[SPLIT]"
+
+
+def make_msg(info: dict, msg_id: str = None, command: str = "ack") -> bytes:
+    if msg_id is None:
+        msg_id = str(uuid.uuid4())
+    msg = f"{msg_id}{SPLIT_STR}{command}{SPLIT_STR}{json.dumps(info)}"
+    return msg.encode("utf-8")
+
+
+def parse_msg(data: bytes) -> tuple[str, str, dict]:
+    data_decode = data.decode("utf-8")
+    print("received message:", data_decode)
+    split_array = data_decode.split(SPLIT_STR)
+    msg_id = split_array[0]
+    command = split_array[1]
+    value = split_array[2]
+    return (msg_id, command, json.loads(value))
 
 
 class Room:
@@ -46,29 +64,50 @@ class TcbwSocketProtocol(protocol.Protocol):
     def connectionMade(self):
         pass
 
-    @staticmethod
-    def gen_msg_id():
-        msg_id = uuid.uuid4()
-        return str(msg_id)
+    def write(self, info: dict, msg_id: str = None, command: str = "ack"):
+        self.transport.write(make_msg(info, msg_id, command))
 
-    def init_user(self):
-        pass
-
-    def create_room(self, id, name, password):
+    def create_room(self, msg_id: str, info: dict):
         create_room(
-            id,
+            info["room_id"],
             self.account,
-            name,
-            password,
+            info["room_name"],
+            info["room_password"],
         )
-        self.room = Room(id)
+        self.room = Room(info["room_id"])
         room_map[self.room.id] = self.room
         self.room.add_user(self)
 
-    def join_room(self):
-        pass
+    def join_room(self, msg_id: str, info: dict):
+        room_in_db = get_room(info["room_id"])
+        if room_in_db["password"] == info["input_room_password"]:
+            self.room = room_map[info["room_id"]]
+            for user_socket in self.room.user_sockets:
+                # 广播通知房间有人进来
+                user_socket.write(
+                    {
+                        "account": self.account,
+                    },
+                    command="user-join",
+                )
+            self.room.add_user(self)
+            if msg_id is not None:
+                self.write(
+                    {
+                        "msg": "加入房间成功",
+                    },
+                    msg_id=msg_id,
+                )
+        else:
+            if msg_id is not None:
+                self.write(
+                    {
+                        "msg": "密码错误无法加入",
+                    },
+                    msg_id=msg_id,
+                )
 
-    def leave_room(self):
+    def leave_room(self, msg_id: str, info: dict):
         if self.room is not None:
             self.room.remove_user(self)
             if self.room.is_empty():
@@ -80,61 +119,63 @@ class TcbwSocketProtocol(protocol.Protocol):
                 set_room_master(self.room.id, new_master.account)
                 for user_socket in self.room.user_sockets:
                     # 广播通知房间有人离开
-                    user_socket.transport.write(
-                        (
-                            TcbwSocketProtocol.gen_msg_id()
-                            + SPLIT_STR
-                            + "user-leave"
-                            + SPLIT_STR
-                            + self.account
-                        ).encode()
+                    user_socket.write(
+                        {
+                            "account": self.account,
+                        },
+                        command="user-leave",
                     )
                     # 广播通知换房主
-                    user_socket.transport.write(
-                        (
-                            TcbwSocketProtocol.gen_msg_id()
-                            + SPLIT_STR
-                            + "change-master-to"
-                            + SPLIT_STR
-                            + new_master.account
-                        ).encode()
+                    user_socket.write(
+                        {
+                            "account": new_master.account,
+                        },
+                        command="change-master-to",
                     )
             self.room = None
+            if msg_id is not None:
+                self.write(
+                    {
+                        "msg": "离开房间成功",
+                    },
+                    msg_id=msg_id,
+                )
+        else:
+            if msg_id is not None:
+                self.write(
+                    {
+                        "msg": "不在房间里",
+                    },
+                    msg_id=msg_id,
+                )
 
-    def exit_game(self):
-        self.leave_room()
-        if self.account is not None:
-            save_user_online_tag(self.account, False)
+    def online_game(self, msg_id: str, info: dict):
+        self.account = info["account"]
+        save_user_online_tag(self.account, self.addr.host, self.addr.port, True)
+        self.write(
+            {},
+            msg_id=msg_id,
+        )
 
-    def dataReceived(self, data):
+    def dataReceived(self, data: bytes):
         try:
-            data_decode = data.decode("utf-8")
-            print("Received data:", data_decode)
-            split_array = data_decode.split(SPLIT_STR)
-            msg_id = split_array[0]
-            command = split_array[1]
-            value = split_array[2]
+            (msg_id, command, info) = parse_msg(data)
             if command == "online":
-                self.account = value
-                save_user_online_tag(self.account, self.addr.host, self.addr.port, True)
-                self.init_user()
+                self.online_game(msg_id, info)
             elif command == "create-room":
-                info = json.loads(value)
-                self.create_room(info["id"], info["name"], info["password"])
+                self.create_room(msg_id, info)
             elif command == "join-room":
-                self.join_room()
+                self.join_room(msg_id, info)
             elif command == "leave-room":
-                self.leave_room()
-            elif command == "ack":
-                return
-            self.transport.write(
-                (msg_id + SPLIT_STR + "ack" + SPLIT_STR + "ok").encode()
-            )
+                self.leave_room(msg_id, info)
         except Exception as ex:
-            print("data parse error", ex)
+            print("data received error:", ex)
 
     def connectionLost(self, reason):
-        self.exit_game()
+        self.leave_room()
+        if self.account is not None:
+            print(f"{self.account} exit game, reason: {reason}")
+            save_user_online_tag(self.account, self.addr.host, self.addr.port, False)
 
 
 class TcbwSocketFactory(protocol.Factory):

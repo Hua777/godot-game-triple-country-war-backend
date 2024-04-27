@@ -44,16 +44,25 @@ class HttpAuthResource(resource.Resource):
         )
         user_in_db = MYSQL_TOOL.execute_query_one(
             f"""
-            select * from tcwb_user where account = '{body['account']}'                                     
+            select * from tcwb_user where account = '{body['account']}' and password = '{body['password']}'
             """
         )
-        token = http_tool.generate_token()
-        MYSQL_TOOL.execute_update(
-            f"""
-            insert into tcwb_user_token (token, user_account, expired_time) values ('{token}', '{user_in_db['account']}', DATE_ADD(NOW(), INTERVAL 1 YEAR))
-            """
-        )
-        response = {"data": user_in_db, "tcwb-token": token}
+        if user_in_db is not None:
+            token = http_tool.generate_token()
+            MYSQL_TOOL.execute_update(
+                f"""
+                insert into tcwb_user_token (token, user_account, expired_time) values ('{token}', '{user_in_db['account']}', DATE_ADD(NOW(), INTERVAL 1 YEAR))
+                """
+            )
+            response = {
+                "data": user_in_db,
+                "tcwb-token": token,
+            }
+        else:
+            response = {
+                "msg": "密码错误",
+            }
+            request.setResponseCode(503)
         request.setHeader(b"Content-Type", b"application/json")
         request.write(json.dumps(response, default=str).encode())
         return b""

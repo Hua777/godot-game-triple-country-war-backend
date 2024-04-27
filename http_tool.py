@@ -44,3 +44,10 @@ def get_page_info_from_request(request: server.Request):
         size = int(request.args[b"size"][0])
     offset = page * size
     return (offset, page, size)
+
+
+def get_query_dict_from_request(request: server.Request) -> dict:
+    query_dict = {}
+    for key, value in request.args.items():
+        query_dict[key.decode("utf-8")] = value[0].decode("utf-8")
+    return query_dict
