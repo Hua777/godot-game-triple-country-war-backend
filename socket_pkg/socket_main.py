@@ -40,11 +40,14 @@ class Room:
     def get_any_user(self):
         return self.user_sockets[0] if len(self.user_sockets) > 0 else None
 
-    def user_ready(self, account):
-        self.ready_users.add(account)
+    def user_ready_or_not(self, account):
+        if account in self.ready_users:
+            self.ready_users.remove(account)
+        else:
+            self.ready_users.add(account)
 
     def user_unready(self, account):
-        self.ready_users.remove(account)
+        self.ready_users.discard(account)
 
 
 room_map: dict[str, Room] = {}
@@ -79,6 +82,10 @@ class TcbwSocketProtocol(WebSocketServerProtocol):
                 self.kick_out_user_from_room(msg_id, info)
             elif command == "change-room-property":
                 self.change_room_property(msg_id, info)
+            elif command == "ready-or-not":
+                self.ready_or_not(msg_id, info)
+            elif command == "start-game":
+                self.start_game(msg_id, info)
 
     def onClose(self, wasClean, code, reason):
         if self.account is not None:
@@ -151,6 +158,21 @@ class TcbwSocketProtocol(WebSocketServerProtocol):
                     msg_id,
                     {
                         "msg": "你不是房主",
+                    },
+                )
+            return False
+
+    def is_not_room_master(self, msg_id: str, command: str) -> bool:
+        room_in_db = get_room(self.room.id)
+        if room_in_db["master_account"] != self.account:
+            return True
+        else:
+            if msg_id is not None:
+                self.send_ack(
+                    command,
+                    msg_id,
+                    {
+                        "msg": "你是房主",
                     },
                 )
             return False
@@ -242,7 +264,7 @@ class TcbwSocketProtocol(WebSocketServerProtocol):
             for user_socket in self.room.user_sockets:
                 user = get_user(user_socket.account)
                 response["users"][user_socket.account] = user
-                if user_socket.account in self.room.user_ready:
+                if user_socket.account in self.room.ready_users:
                     user["ready"] = True
                 else:
                     user["ready"] = False
@@ -360,8 +382,33 @@ class TcbwSocketProtocol(WebSocketServerProtocol):
 
     def ready_or_not(self, msg_id: str = None, info: dict = {}):
         if self.is_in_room(msg_id, "ready-or-not"):
-            if self.account not in self.room.user_ready:
-                self.room.user_ready.append(self.account)
+            if self.is_not_room_master(msg_id, "ready-or-not"):
+                self.room.user_ready_or_not(self.account)
                 for user_socket in self.room.user_sockets:
                     # 通知所有人有人准备
-                    user_socket.send_command()
+                    user_socket.send_command(
+                        "user-ready-changed",
+                        {},
+                    )
+                if msg_id is not None:
+                    self.send_ack(
+                        "ready-or-not",
+                        msg_id,
+                        {},
+                    )
+
+    def start_game(self, msg_id: str = None, info: dict = {}):
+        if self.is_in_room(msg_id, "start-game"):
+            if self.is_room_master(msg_id, "start-game"):
+                for user_socket in self.room.user_sockets:
+                    # 通知所有人开始游戏
+                    user_socket.send_command(
+                        "game-started",
+                        {},
+                    )
+                if msg_id is not None:
+                    self.send_ack(
+                        "start-game",
+                        msg_id,
+                        {},
+                    )

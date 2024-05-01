@@ -32,9 +32,12 @@ def set_room_close(id):
 
 
 def set_room_role_count(id, loyal_count, traitor_count, rebel_count):
-    if loyal_count == '': loyal_count = '0'
-    if traitor_count == '': traitor_count = '0'
-    if rebel_count == '': rebel_count = '0'
+    if loyal_count == "":
+        loyal_count = "0"
+    if traitor_count == "":
+        traitor_count = "0"
+    if rebel_count == "":
+        rebel_count = "0"
     MYSQL_TOOL.execute_update(
         f"update tcwb_room set loyal_count = {loyal_count}, traitor_count = {traitor_count}, rebel_count = {rebel_count} where id = '{id}'"
     )
