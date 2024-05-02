@@ -2,7 +2,7 @@ from twisted.internet import reactor
 from twisted.web import server, resource
 
 from http_pkg import http_health, http_user, http_room
-from socket_pkg.socket_main import TcbwSocketProtocol
+from socket_pkg.socket_user import SocketUser
 
 from autobahn.twisted.websocket import WebSocketServerFactory
 
@@ -14,7 +14,7 @@ site = server.Site(root)
 reactor.listenTCP(8080, site)
 
 factory = WebSocketServerFactory()
-factory.protocol = TcbwSocketProtocol
+factory.protocol = SocketUser
 reactor.listenTCP(8090, factory)
 
 reactor.run()
