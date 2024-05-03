@@ -1,9 +1,12 @@
+from config import FIRST_CARD_COUNT
+
 from game.socket_user_for_room_interface import SocketUserForRoomInterface
+from game.leader.leader_pool import leader_pool
 
 import random
 
 
-from http_pkg.http_game import random_leaders
+from http_pkg.http_game import random_leaders, random_cards
 
 
 class RoomInterface:
@@ -20,10 +23,16 @@ class RoomInterface:
         self.traitor_count: int = 0
         # 反贼数量
         self.rebel_count: int = 0
+        #
+        self.reset_game()
+
+    def reset_game(self):
         # 身份卡片
         self.identity_cards: list[dict] = []
         # 将领卡片池
         self.leader_pool: list[dict] = []
+        # 谁的回合
+        self.turn_index = -1
 
     def add_user(self, user):
         self.users.append(user)
@@ -96,5 +105,31 @@ class RoomInterface:
         random.shuffle(self.identity_cards)
 
     def generate_leader_pool(self):
-        self.leader_pool = random_leaders(len(self.users) * 5)
+        self.leader_pool = random_leaders(len(self.users) * FIRST_CARD_COUNT)
         random.shuffle(self.leader_pool)
+
+    def draw_cards(self, count) -> list[dict]:
+        return random_cards(count)
+
+    def get_user_index(self, user) -> int:
+        return self.users.index(user)
+
+    def next_turn(self):
+        if self.turn_index != -1:
+            for user in self.users:
+                if user == self.turn_user():
+                    leader_pool[user.leader["id"]].after_your_turn(user)
+                else:
+                    leader_pool[user.leader["id"]].after_other_turn(
+                        user, self.turn_user()
+                    )
+        self.turn_index += 1
+        self.turn_index = self.turn_index % len(self.users)
+        for user in self.users:
+            if user == self.turn_user():
+                leader_pool[user.leader["id"]].before_your_turn(user)
+            else:
+                leader_pool[user.leader["id"]].before_other_turn(user, self.turn_user())
+
+    def turn_user(self) -> SocketUserForRoomInterface:
+        return self.users[self.turn_index]

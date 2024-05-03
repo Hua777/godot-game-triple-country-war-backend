@@ -1,6 +1,9 @@
+from config import FIRST_CARD_COUNT, NORMAL_CARD_COUNT
+
 from socket_pkg.socket_user import SocketUser
 from game.room_interface import RoomInterface
 from game.socket_user_for_room_interface import SocketUserForRoomInterface
+from game.leader.leader_pool import leader_pool
 
 from http_pkg.http_user import get_user
 from http_pkg.http_room import (
@@ -58,6 +61,14 @@ class SocketUserForStandardRoom(SocketUserForRoomInterface):
             self.choose_identity(msg_id, info)
         elif command == "choose-leader":
             self.choose_leader(msg_id, info)
+        elif command == "cards":
+            self.cards(msg_id, info)
+        elif command == "game-info":
+            self.game_info(msg_id, info)
+        elif command == "first-draw-cards":
+            self.first_draw_cards(msg_id, info)
+        elif command == "draw-cards":
+            self.draw_cards(msg_id, info)
 
     def on_close(self):
         return super().on_close()
@@ -139,6 +150,18 @@ class SocketUserForStandardRoom(SocketUserForRoomInterface):
                 },
             )
             return False
+
+    def is_your_turn(self, msg_id: str, command: str) -> bool:
+        if self == self.room.turn_user():
+            return True
+        else:
+            self.send_ack(
+                command,
+                msg_id,
+                {
+                    "msg": "还不是你的回合",
+                },
+            )
 
     def create_room(self, msg_id: str, info: dict):
         try:
@@ -223,6 +246,7 @@ class SocketUserForStandardRoom(SocketUserForRoomInterface):
 
     def leave_room(self, msg_id: str = None, info: dict = {}):
         if self.is_in_room(msg_id, "leave-room"):
+            # 房间踢出自己
             self.room.remove_user(self)
             if self.room.is_empty():
                 # 房间没人了，内存删除房间
@@ -247,11 +271,9 @@ class SocketUserForStandardRoom(SocketUserForRoomInterface):
                     },
                 )
             # 将自己的房间设置为空
-            self.room = None
             # 设置为未准备
-            self.ready = False
             # 设置非房主
-            self.master = False
+            self.reset_room()
             # 回复
             self.send_ack(
                 "leave-room",
@@ -310,6 +332,10 @@ class SocketUserForStandardRoom(SocketUserForRoomInterface):
                     info["traitor_count"],
                     info["rebel_count"],
                 )
+                # 更新房间属性
+                self.room.loyal_count = int(info["loyal_count"])
+                self.room.traitor_count = int(info["traitor_count"])
+                self.room.rebel_count = int(info["rebel_count"])
                 # 通知所有人房间属性变更了
                 self.room.broadcast(
                     "room-property-changed",
@@ -350,19 +376,21 @@ class SocketUserForStandardRoom(SocketUserForRoomInterface):
             if self.is_room_master(msg_id, "start-game"):
                 # 检查身份数量加总是否等于房间游戏人数数量
                 if (
-                    info["loyal_count"]
-                    + info["traitor_count"]
-                    + info["rebel_count"]
+                    self.room.loyal_count
+                    + self.room.traitor_count
+                    + self.room.rebel_count
                     + 1
                 ) == len(self.room.users):
                     # 检查是否都准备好了
                     if self.room.is_all_ready():
+                        # 重置房间游戏状态
+                        self.room.reset_game()
                         # 创建游戏
                         game_id = create_game(
                             self.room.id,
-                            info["loyal_count"],
-                            info["traitor_count"],
-                            info["rebel_count"],
+                            self.room.loyal_count,
+                            self.room.traitor_count,
+                            self.room.rebel_count,
                         )
                         # 创建游戏用户
                         for user in self.room.users:
@@ -430,9 +458,18 @@ class SocketUserForStandardRoom(SocketUserForRoomInterface):
                     "list-leader-cards",
                     msg_id,
                     {
-                        "leader_cards": self.room.leader_pool[index * 5 : index * 6],
+                        "leader_cards": self.room.leader_pool[
+                            index * FIRST_CARD_COUNT : index * (FIRST_CARD_COUNT + 1)
+                        ],
                     },
                 )
+
+    # 大家都选完身份了
+    def after_all_choose_identity(self):
+        for user in self.room.users:
+            if user.identity == "unknown":
+                return
+        self.room.broadcast("choose-identity-finished", {})
 
     # 选择身份
     def choose_identity(self, msg_id: str = None, info: dict = {}):
@@ -457,7 +494,7 @@ class SocketUserForStandardRoom(SocketUserForRoomInterface):
                         update_game_user_identity(
                             self.room.game_id,
                             self.socket_user.account,
-                            info["identity"],
+                            identity_card["identity"],
                         )
                         # 广播通知有人选中了身份
                         self.room.broadcast(
@@ -474,6 +511,8 @@ class SocketUserForStandardRoom(SocketUserForRoomInterface):
                                 "identity": identity_card["identity"],
                             },
                         )
+                        # 检查大家是否选完身份
+                        self.after_all_choose_identity()
                 else:
                     self.send_ack(
                         "choose-identity",
@@ -483,15 +522,24 @@ class SocketUserForStandardRoom(SocketUserForRoomInterface):
                         },
                     )
 
+    # 大家都选完将领了
+    def all_choose_leader(self):
+        for user in self.room.users:
+            if user.leader is None:
+                return
+        for user in self.room.users:
+            leader_pool[user.leader["id"]].after_everybody_prepare()
+        self.room.broadcast("choose-leader-finished", {})
+
     # 选择将领
     def choose_leadaer(self, msg_id: str = None, info: dict = {}):
         if self.is_in_room(msg_id, "choose-leader"):
             if self.is_in_game(msg_id, "choose-leader"):
-                if self.leader_id == -1:
+                if self.leader is None:
                     # 更新用户将领
-                    self.leader_id = int(info["leader_id"])
+                    self.select_leader(info["leader"])
                     update_game_user_leader_id(
-                        self.room.game_id, self.socket_user.account, info["leader_id"]
+                        self.room.game_id, self.socket_user.account, self.leader["id"]
                     )
                     # 回复
                     self.send_ack(
@@ -499,12 +547,147 @@ class SocketUserForStandardRoom(SocketUserForRoomInterface):
                         msg_id,
                         {},
                     )
+                    # 检查大家是否选完将领
+                    self.all_choose_leader()
                 else:
                     self.send_ack(
                         "choose-leader",
                         msg_id,
                         {
                             "msg": "你已经选择过将领了",
+                        },
+                    )
+
+    # 玩家手上的卡
+    def cards(self, msg_id: str = None, info: dict = {}):
+        if self.is_in_room(msg_id, "cards"):
+            if self.is_in_game(msg_id, "cards"):
+                # 回复
+                self.send_ack(
+                    "cards",
+                    msg_id,
+                    {
+                        "hand_cards": self.hand_cards,
+                    },
+                )
+
+    def calculate_distance(self, a, b):
+        d = abs(b - a)
+        d_circular = (len(self.room.users) - b + a) % len(self.room.users)
+        return min(d, d_circular)
+
+    # 游戏信息
+    def game_info(self, msg_id: str = None, info: dict = {}):
+        if self.is_in_room(msg_id, "game-info"):
+            if self.is_in_game(msg_id, "game-info"):
+                # 我的位置
+                my_index = self.room.get_user_index(self)
+                # 回复
+                self.send_ack(
+                    "game-info",
+                    msg_id,
+                    {
+                        "users": [
+                            {
+                                "account": user.socket_user.account,
+                                "leader": user.leader,
+                                "life": user.life,
+                                "hand_card_count": len(user.hand_cards),
+                                "weapon": user.weapon,
+                                "equipment": user.equipment,
+                                "horse": user.horse,
+                                "status_list": user.status_list,
+                                "attack_distance": user.get_attack_distance(),
+                                "distance_adjust": user.get_distance_adjust(),
+                                "you_to_user_distance": (
+                                    0
+                                    if index == my_index
+                                    else self.calculate_distance(my_index, index)
+                                    + user.get_distance_adjust()
+                                ),
+                                "user_to_you_distance": (
+                                    0
+                                    if index == my_index
+                                    else self.calculate_distance(my_index, index)
+                                    + self.get_distance_adjust()
+                                ),
+                            }
+                            for (index, user) in enumerate(self.room.users)
+                        ]
+                    },
+                )
+
+    # 检查大家是否都完成了第一次抽卡
+    def all_first_draw_cards(self):
+        for user in self.room.users:
+            if len(user.hand_cards) != FIRST_CARD_COUNT:
+                return
+        self.room.broadcast("first-draw-cards-finished", {})
+        # 开始第一回合
+        self.room.next_turn()
+
+    # 游戏刚开始的抽卡
+    def first_draw_cards(self, msg_id: str = None, info: dict = {}):
+        if self.is_in_room(msg_id, "first-draw-cards"):
+            if self.is_in_game(msg_id, "first-draw-cards"):
+                # 检查是否抽过卡
+                if len(self.hand_cards) != FIRST_CARD_COUNT:
+                    # 抽卡
+                    for card in self.room.draw_cards(FIRST_CARD_COUNT):
+                        self.hand_cards.append(card)
+                    # 回复
+                    self.send_ack(
+                        "first-draw-cards",
+                        msg_id,
+                        {
+                            "hand_cards": self.hand_cards,
+                        },
+                    )
+                    # 检查大家是否都完成了第一次抽卡
+                    self.all_first_draw_cards()
+                else:
+                    self.send_ack(
+                        "first-draw-cards",
+                        msg_id,
+                        {
+                            "msg": "你已经抽过卡了",
+                        },
+                    )
+
+    # 抽卡
+    def draw_cards(self, msg_id: str = None, info: dict = {}):
+        if self.is_in_room(msg_id, "draw-cards"):
+            if self.is_in_game(msg_id, "draw-cards"):
+                if self.is_your_turn(msg_id, "draw-cards"):
+                    # 抽卡前
+                    leader_pool[self.leader["id"]].before_you_draw_card(self)
+                    # 抽卡
+                    draw_cards = self.room.draw_cards(NORMAL_CARD_COUNT)
+                    for card in draw_cards:
+                        self.hand_cards.append(card)
+                    # 抽卡后
+                    leader_pool[self.leader["id"]].after_you_draw_card(self)
+                    # 回复
+                    self.send_ack(
+                        "draw-cards",
+                        msg_id,
+                        {
+                            "draw_cards": draw_cards,
+                            "hand_cards": self.hand_cards,
+                        },
+                    )
+
+    # 结束我的回合
+    def finish_my_turn(self, msg_id: str = None, info: dict = {}):
+        if self.is_in_room(msg_id, "finish-my-turn"):
+            if self.is_in_game(msg_id, "finish-my-turn"):
+                if self.is_your_turn(msg_id, "finish-my-turn"):
+                    self.room.next_turn()
+                    # 广播轮到谁了
+                    self.room.broadcast(
+                        "turn-changed",
+                        {
+                            "account": self.room.turn_user().socket_user.account,
                         },
                     )
 
@@ -516,7 +699,5 @@ class SocketUserForStandardRoom(SocketUserForRoomInterface):
     #             )
     #             # 清空所有玩家的身份、将领、游戏ID
     #             for user in self.room.users:
+    #                 user.reset_game()
     #                 user.ready = False
-    #                 user.room.game_id = None
-    #                 user.identity = "unknown"
-    #                 user.leader_id = -1

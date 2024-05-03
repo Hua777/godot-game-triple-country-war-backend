@@ -1,3 +1,5 @@
+from config import RANDOM_LEADER_COUNT
+
 from twisted.web import resource, server
 import json
 
@@ -60,29 +62,23 @@ def random_leaders(count: int) -> list[dict]:
     )
 
 
+def get_leader(id: int) -> dict:
+    return MYSQL_TOOL.execute_query_one(f"select * from tcwb_leader where id = {id}")
+
+
+def random_cards(count: int) -> list[dict]:
+    return MYSQL_TOOL.execute_query(
+        f"select * from tcwb_card order by rand() limit {count}"
+    )
+
+
+def get_card(id: int) -> dict:
+    return MYSQL_TOOL.execute_query_one(f"select * from tcwb_card where id = {id}")
+
+
 class HttpListIdentityResource(resource.Resource):
     def __init__(self):
         resource.Resource.__init__(self)
-
-    """
-    列表查询将领
-    """
-
-    def render_GET(self, request: server.Request):
-        user_in_db = http_tool.get_user_info_from_request(request)
-        if user_in_db is not None:
-            leaders = random_leaders(5)
-            response = {
-                "data": leaders,
-            }
-        else:
-            response = {
-                "msg": "请先登录",
-            }
-            request.setResponseCode(401)
-        request.setHeader(b"Content-Type", b"application/json")
-        request.write(json.dumps(response, default=str).encode())
-        return b""
 
 
 class HttpRoomResource(resource.Resource):
