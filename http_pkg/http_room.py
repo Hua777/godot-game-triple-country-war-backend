@@ -43,13 +43,6 @@ def set_room_role_count(id, loyal_count, traitor_count, rebel_count):
     )
 
 
-def create_room_user(room_id, user_accounts: list):
-    for user_account in user_accounts:
-        MYSQL_TOOL.execute_update(
-            f"insert into tcwb_room_user (room_id, user_account) values ('{room_id}', '{user_account}')"
-        )
-
-
 class HttpPageResource(resource.Resource):
     def __init__(self):
         resource.Resource.__init__(self)
@@ -83,6 +76,7 @@ class HttpPageResource(resource.Resource):
             response = {
                 "msg": "请先登录",
             }
+            request.setResponseCode(401)
         request.setHeader(b"Content-Type", b"application/json")
         request.write(json.dumps(response, default=str).encode())
         return b""

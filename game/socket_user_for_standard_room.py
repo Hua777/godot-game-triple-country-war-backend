@@ -2,14 +2,22 @@ from socket_pkg.socket_user import SocketUser
 from game.room_interface import RoomInterface
 from game.socket_user_for_room_interface import SocketUserForRoomInterface
 
-from http_pkg.http_user import save_user_online_tag, get_user
+from http_pkg.http_user import get_user
 from http_pkg.http_room import (
     create_room,
-    create_room_user,
     set_room_role_count,
     set_room_master,
     get_room,
     set_room_close,
+)
+from http_pkg.http_game import (
+    create_game,
+    finish_game,
+    create_game_user,
+    update_game_user_identity,
+    update_game_user_leader_id,
+    create_game_operate_history,
+    get_game_user,
 )
 
 
@@ -24,7 +32,6 @@ standard_rooms: dict[str, StandardRoom] = {}
 class SocketUserForStandardRoom(SocketUserForRoomInterface):
     def __init__(self, socket_user: SocketUser) -> None:
         super().__init__(socket_user)
-        self.room: StandardRoom = None
 
     def on_request(self, msg_id: str, command: str, info: dict):
         if command == "create-room":
@@ -43,6 +50,14 @@ class SocketUserForStandardRoom(SocketUserForRoomInterface):
             self.ready_or_not(msg_id, info)
         elif command == "start-game":
             self.start_game(msg_id, info)
+        elif command == "list-identity":
+            self.list_identity(msg_id, info)
+        elif command == "list-leaders":
+            self.list_leaders(msg_id, info)
+        elif command == "choose-identity":
+            self.choose_identity(msg_id, info)
+        elif command == "choose-leader":
+            self.choose_leader(msg_id, info)
 
     def on_close(self):
         return super().on_close()
@@ -74,8 +89,7 @@ class SocketUserForStandardRoom(SocketUserForRoomInterface):
             return False
 
     def is_room_master(self, msg_id: str, command: str) -> bool:
-        room_in_db = get_room(self.room.id)
-        if room_in_db["master_account"] == self.socket_user.account:
+        if self.master:
             return True
         else:
             self.send_ack(
@@ -88,8 +102,7 @@ class SocketUserForStandardRoom(SocketUserForRoomInterface):
             return False
 
     def is_not_room_master(self, msg_id: str, command: str) -> bool:
-        room_in_db = get_room(self.room.id)
-        if room_in_db["master_account"] != self.account:
+        if not self.master:
             return True
         else:
             self.send_ack(
@@ -97,6 +110,19 @@ class SocketUserForStandardRoom(SocketUserForRoomInterface):
                 msg_id,
                 {
                     "msg": "你是房主",
+                },
+            )
+            return False
+
+    def is_in_game(self, msg_id: str, command: str) -> bool:
+        if self.room.game_id is not None:
+            return True
+        else:
+            self.send_ack(
+                command,
+                msg_id,
+                {
+                    "msg": "游戏未开始",
                 },
             )
             return False
@@ -124,6 +150,8 @@ class SocketUserForStandardRoom(SocketUserForRoomInterface):
                     info["room_name"],
                     info["room_password"],
                 )
+                # 内存设置房主
+                self.master = True
                 # 初始化自己的房间
                 self.room = StandardRoom(info["room_id"])
                 # 全局保存房间列表
@@ -202,14 +230,15 @@ class SocketUserForStandardRoom(SocketUserForRoomInterface):
                 # 去数据库把房间删掉
                 set_room_close(self.room.id)
             else:
-                room_in_db = get_room(self.room.id)
-                if room_in_db["master_account"] == self.socket_user.account:
+                if self.master:
                     # 如果离开的是房主，则找新房主
                     new_master = self.room.get_any_user()
                     # 新房主不能是已经准备的状态
                     self.room.user_unready(new_master.socket_user.account)
                     # 数据库设置新房主
                     set_room_master(self.room.id, new_master.socket_user.account)
+                    # 内存设置房主
+                    new_master.master = True
                 # 广播通知房间有人离开
                 self.room.broadcast(
                     "user-leave",
@@ -221,6 +250,8 @@ class SocketUserForStandardRoom(SocketUserForRoomInterface):
             self.room = None
             # 设置为未准备
             self.ready = False
+            # 设置非房主
+            self.master = False
             # 回复
             self.send_ack(
                 "leave-room",
@@ -317,11 +348,175 @@ class SocketUserForStandardRoom(SocketUserForRoomInterface):
     def start_game(self, msg_id: str = None, info: dict = {}):
         if self.is_in_room(msg_id, "start-game"):
             if self.is_room_master(msg_id, "start-game"):
-                # 通知所有人开始游戏
-                self.room.broadcast("game-started", {})
+                # 检查身份数量加总是否等于房间游戏人数数量
+                if (
+                    info["loyal_count"]
+                    + info["traitor_count"]
+                    + info["rebel_count"]
+                    + 1
+                ) == len(self.room.users):
+                    # 检查是否都准备好了
+                    if self.room.is_all_ready():
+                        # 创建游戏
+                        game_id = create_game(
+                            self.room.id,
+                            info["loyal_count"],
+                            info["traitor_count"],
+                            info["rebel_count"],
+                        )
+                        # 创建游戏用户
+                        for user in self.room.users:
+                            user.room.game_id = game_id
+                            create_game_user(game_id, user.socket_user.account)
+                        # 随机创建身份
+                        self.room.generate_identity_cards()
+                        # 随机创建将领
+                        self.room.generate_leader_pool()
+                        # 通知所有人开始游戏
+                        self.room.broadcast(
+                            "game-started",
+                            {
+                                "game_id": game_id,
+                            },
+                        )
+                        # 回复
+                        self.send_ack(
+                            "start-game",
+                            msg_id,
+                            {
+                                "game_id": game_id,
+                            },
+                        )
+                    else:
+                        self.send_ack(
+                            "start-game",
+                            msg_id,
+                            {
+                                "msg": "房间内玩家未全部准备",
+                            },
+                        )
+                else:
+                    self.send_ack(
+                        "start-game",
+                        msg_id,
+                        {
+                            "msg": "身份数量与游戏人数不匹配",
+                        },
+                    )
+
+    # 列出当前游戏的身份
+    def list_identity_cards(self, msg_id: str = None, info: dict = {}):
+        if self.is_in_room(msg_id, "list-identity-cards"):
+            if self.is_in_game(msg_id, "list-identity-cards"):
                 # 回复
                 self.send_ack(
-                    "start-game",
+                    "list-identity-cards",
                     msg_id,
-                    {},
+                    {
+                        "identity_cards": map(
+                            lambda x: x["selected"], self.room.identity_cards
+                        ),
+                    },
                 )
+
+    # 列出当前用户对应的游戏将领
+    def list_leader_cards(self, msg_id: str = None, info: dict = {}):
+        if self.is_in_room(msg_id, "list-leader-cards"):
+            if self.is_in_game(msg_id, "list-leader-cards"):
+                # index of user
+                index = self.room.users.index(self.socket_user)
+                # 回复
+                self.send_ack(
+                    "list-leader-cards",
+                    msg_id,
+                    {
+                        "leader_cards": self.room.leader_pool[index * 5 : index * 6],
+                    },
+                )
+
+    # 选择身份
+    def choose_identity(self, msg_id: str = None, info: dict = {}):
+        if self.is_in_room(msg_id, "choose-identity"):
+            if self.is_in_game(msg_id, "choose-identity"):
+                if self.identity == "unknown":
+                    # TODO redis
+                    identity_card = self.room.identity_cards[info["index"]]
+                    if identity_card["selected"]:
+                        # 已被选择
+                        self.send_ack(
+                            "choose-identity",
+                            msg_id,
+                            {
+                                "msg": "该身份已被选择",
+                            },
+                        )
+                    else:
+                        identity_card["selected"] = True
+                        # 更新用户身份
+                        self.identity = identity_card["identity"]
+                        update_game_user_identity(
+                            self.room.game_id,
+                            self.socket_user.account,
+                            info["identity"],
+                        )
+                        # 广播通知有人选中了身份
+                        self.room.broadcast(
+                            "identity-changed",
+                            {
+                                "account": self.socket_user.account,
+                            },
+                        )
+                        # 回复
+                        self.send_ack(
+                            "choose-identity",
+                            msg_id,
+                            {
+                                "identity": identity_card["identity"],
+                            },
+                        )
+                else:
+                    self.send_ack(
+                        "choose-identity",
+                        msg_id,
+                        {
+                            "msg": "你已经选择过身份了",
+                        },
+                    )
+
+    # 选择将领
+    def choose_leadaer(self, msg_id: str = None, info: dict = {}):
+        if self.is_in_room(msg_id, "choose-leader"):
+            if self.is_in_game(msg_id, "choose-leader"):
+                if self.leader_id == -1:
+                    # 更新用户将领
+                    self.leader_id = int(info["leader_id"])
+                    update_game_user_leader_id(
+                        self.room.game_id, self.socket_user.account, info["leader_id"]
+                    )
+                    # 回复
+                    self.send_ack(
+                        "choose-leader",
+                        msg_id,
+                        {},
+                    )
+                else:
+                    self.send_ack(
+                        "choose-leader",
+                        msg_id,
+                        {
+                            "msg": "你已经选择过将领了",
+                        },
+                    )
+
+    # def finish_game(self, msg_id: str = None, info: dict = {}):
+    #     if self.is_in_room(msg_id, "finish-game"):
+    #         if self.is_in_game(msg_id, "finish-game"):
+    #             finish_game(
+    #                 self.room.game_id, info["win_type"], info["winner_identity"]
+    #             )
+    #             # 清空所有玩家的身份、将领、游戏ID
+    #             for user in self.room.users:
+    #                 user.ready = False
+    #                 user.room.game_id = None
+    #                 user.identity = "unknown"
+    #                 user.leader_id = -1

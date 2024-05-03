@@ -1,7 +1,7 @@
 from twisted.internet import reactor
 from twisted.web import server, resource
 
-from http_pkg import http_health, http_user, http_room
+from http_pkg import http_health, http_user, http_room, http_game
 from socket_pkg.socket_user import SocketUser
 
 from autobahn.twisted.websocket import WebSocketServerFactory
@@ -10,6 +10,7 @@ root = resource.Resource()
 http_health.install(root)
 http_user.install(root)
 http_room.install(root)
+http_game.install(root)
 site = server.Site(root)
 reactor.listenTCP(8080, site)
 
