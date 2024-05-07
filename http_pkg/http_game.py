@@ -1,5 +1,3 @@
-from config import RANDOM_LEADER_COUNT
-
 from twisted.web import resource, server
 import json
 
@@ -43,11 +41,65 @@ def update_game_user_leader_id(game_id: int, user_account: str, leader_id: int):
 
 
 def create_game_operate_history(
-    game_id: int, user_account: str, operate: str, detail: dict, describe: str
+    game_id: int, user_account: str, operate: str, detail: dict | list, describe: str
 ):
     MYSQL_TOOL.execute_update(
         f"insert into tcwb_game_operate_history (game_id, user_account, operate, detail, describe) values ({game_id}, '{user_account}', '{operate}', '{json.dumps(detail)}', '{describe}')"
     )
+
+
+def create_game_operate_history_for_select_identity(
+    game_id: int, user_account: str, identity: str
+):
+    create_game_operate_history(
+        game_id, user_account, "select_identity", {"identity": identity}, "选择身份"
+    )
+
+
+def create_game_operate_history_for_select_leader(
+    game_id: int, user_account: str, leader: dict
+):
+    create_game_operate_history(
+        game_id, user_account, "select_leader", leader, "选择将领"
+    )
+
+
+def create_game_operate_history_for_draw_cards(
+    game_id: int, user_account: str, cards: list
+):
+    create_game_operate_history(game_id, user_account, "draw_cards", cards, "摸牌")
+
+
+def create_game_operate_history_for_use_card(
+    game_id: int, user_account: str, card: dict, skill: dict, users: list[str]
+):
+    create_game_operate_history(
+        game_id,
+        user_account,
+        "use_card",
+        {
+            "card": card,
+            "skill": skill,
+            "user_accounts": users,
+        },
+        "使用卡牌",
+    )
+
+
+def create_game_operate_history_for_remove_cards(
+    game_id: int, user_account: str, cards: list
+):
+    create_game_operate_history(
+        game_id,
+        user_account,
+        "remove_cards",
+        cards,
+        "移除卡牌",
+    )
+
+
+def create_game_operate_history_for_turn_changed(game_id: int, user_account: str):
+    create_game_operate_history(game_id, user_account, "turn_changed", {}, "回合切换")
 
 
 def get_game_user(game_id: int, user_account: str):

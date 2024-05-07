@@ -1,5 +1,3 @@
-from config import FIRST_CARD_COUNT, NORMAL_CARD_COUNT
-
 from socket_pkg.socket_user import SocketUser
 from game.room_interface import RoomInterface
 from game.socket_user_for_room_interface import SocketUserForRoomInterface
@@ -61,8 +59,6 @@ class SocketUserForStandardRoom(SocketUserForRoomInterface):
             self.choose_identity(msg_id, info)
         elif command == "choose-leader":
             self.choose_leader(msg_id, info)
-        elif command == "cards":
-            self.cards(msg_id, info)
         elif command == "game-info":
             self.game_info(msg_id, info)
         elif command == "first-draw-cards":
@@ -451,18 +447,30 @@ class SocketUserForStandardRoom(SocketUserForRoomInterface):
     def list_leader_cards(self, msg_id: str = None, info: dict = {}):
         if self.is_in_room(msg_id, "list-leader-cards"):
             if self.is_in_game(msg_id, "list-leader-cards"):
-                # index of user
-                index = self.room.users.index(self.socket_user)
-                # 回复
-                self.send_ack(
-                    "list-leader-cards",
-                    msg_id,
-                    {
-                        "leader_cards": self.room.leader_pool[
-                            index * FIRST_CARD_COUNT : index * (FIRST_CARD_COUNT + 1)
-                        ],
-                    },
-                )
+                if self.master:
+                    # 回复
+                    self.send_ack(
+                        "list-leader-cards",
+                        msg_id,
+                        {
+                            "leader_cards": self.room.master_leader_pool,
+                        },
+                    )
+                else:
+                    # index of user
+                    index = self.room.users.index(self.socket_user)
+                    # 回复
+                    self.send_ack(
+                        "list-leader-cards",
+                        msg_id,
+                        {
+                            "leader_cards": self.room.other_leader_pool[
+                                index
+                                * self.room.other_leader_selected_count : index
+                                * (self.room.other_leader_selected_count + 1)
+                            ],
+                        },
+                    )
 
     # 大家都选完身份了
     def after_all_choose_identity(self):
@@ -558,19 +566,6 @@ class SocketUserForStandardRoom(SocketUserForRoomInterface):
                         },
                     )
 
-    # 玩家手上的卡
-    def cards(self, msg_id: str = None, info: dict = {}):
-        if self.is_in_room(msg_id, "cards"):
-            if self.is_in_game(msg_id, "cards"):
-                # 回复
-                self.send_ack(
-                    "cards",
-                    msg_id,
-                    {
-                        "hand_cards": self.hand_cards,
-                    },
-                )
-
     def calculate_distance(self, a, b):
         d = abs(b - a)
         d_circular = (len(self.room.users) - b + a) % len(self.room.users)
@@ -587,6 +582,7 @@ class SocketUserForStandardRoom(SocketUserForRoomInterface):
                     "game-info",
                     msg_id,
                     {
+                        "hand_cards": self.hand_cards,
                         "users": [
                             {
                                 "account": user.socket_user.account,
@@ -613,14 +609,14 @@ class SocketUserForStandardRoom(SocketUserForRoomInterface):
                                 ),
                             }
                             for (index, user) in enumerate(self.room.users)
-                        ]
+                        ],
                     },
                 )
 
     # 检查大家是否都完成了第一次抽卡
     def all_first_draw_cards(self):
         for user in self.room.users:
-            if len(user.hand_cards) != FIRST_CARD_COUNT:
+            if len(user.hand_cards) != self.room.first_get_card_count:
                 return
         self.room.broadcast("first-draw-cards-finished", {})
         # 开始第一回合
@@ -631,9 +627,9 @@ class SocketUserForStandardRoom(SocketUserForRoomInterface):
         if self.is_in_room(msg_id, "first-draw-cards"):
             if self.is_in_game(msg_id, "first-draw-cards"):
                 # 检查是否抽过卡
-                if len(self.hand_cards) != FIRST_CARD_COUNT:
+                if len(self.hand_cards) != self.room.first_get_card_count:
                     # 抽卡
-                    for card in self.room.draw_cards(FIRST_CARD_COUNT):
+                    for card in self.room.draw_cards(self.room.first_get_card_count):
                         self.hand_cards.append(card)
                     # 回复
                     self.send_ack(
@@ -662,7 +658,7 @@ class SocketUserForStandardRoom(SocketUserForRoomInterface):
                     # 抽卡前
                     leader_pool[self.leader["id"]].before_you_draw_card(self)
                     # 抽卡
-                    draw_cards = self.room.draw_cards(NORMAL_CARD_COUNT)
+                    draw_cards = self.room.draw_cards(self.room.every_get_card_count)
                     for card in draw_cards:
                         self.hand_cards.append(card)
                     # 抽卡后
