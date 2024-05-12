@@ -1,7 +1,4 @@
-from socket_pkg.socket_user import SocketUser
-from game.room_interface import RoomInterface
-from game.socket_user_for_room_interface import SocketUserForRoomInterface
-from game.leader.leader_pool import leader_pool
+import random
 
 from http_pkg.http_user import get_user
 from http_pkg.http_room import (
@@ -19,20 +16,255 @@ from http_pkg.http_game import (
     update_game_user_leader_id,
     create_game_operate_history,
     get_game_user,
+    random_leaders,
+    random_cards,
+    create_game_operate_history_for_turn_changed,
 )
 
 
-class StandardRoom(RoomInterface):
-    def __init__(self, id: str):
-        super().__init__(id)
+class Room:
+    def __init__(self, id: str) -> None:
+        # 房间号
+        self.id = id
+        # 房间用户
+        self.users: list[SocketUserForStandardRoom] = []
+        # 游戏ID
+        self.game_id: int = None
+        # 忠臣数量
+        self.loyal_count: int = 0
+        # 内奸数量
+        self.traitor_count: int = 0
+        # 反贼数量
+        self.rebel_count: int = 0
+        # 主公可选择将领数量
+        self.master_leader_selected_count: int = 5
+        # 其他人可选择将领数量
+        self.other_leader_selected_count: int = 3
+        # 首次分卡数量
+        self.first_get_card_count: int = 5
+        # 每次发卡数量
+        self.every_get_card_count: int = 2
+        # 初始化游戏
+        self.reset_game()
+
+    def reset_game(self):
+        # 身份卡片
+        self.identity_cards: list[dict] = []
+        # 主公将领卡片池
+        self.master_leader_pool: list[dict] = []
+        # 其他人将领卡片池
+        self.other_leader_pool: list[dict] = []
+        # 谁的回合
+        self.turn_index = -1
+
+    def add_user(self, user):
+        self.users.append(user)
+
+    def remove_user(self, user):
+        self.users.remove(user)
+
+    def is_empty(self) -> bool:
+        return len(self.users) == 0
+
+    def get_any_user(self):
+        return self.users[0] if len(self.users) > 0 else None
+
+    def user_ready_or_not(self, account: str):
+        for user in self.users:
+            if user.socket_user.account == account:
+                user.ready = not user.ready
+
+    def user_unready(self, account: str):
+        for user in self.users:
+            if user.socket_user.account == account:
+                user.ready = False
+
+    def broadcast(self, command: str, info: dict):
+        for user in self.users:
+            user.send_command(command, info)
+
+    def get_user(self, account: str):
+        for user in self.users:
+            if user.socket_user.account == account:
+                return user
+        return None
+
+    def all_user_ready(self) -> bool:
+        for user in self.users:
+            if not user.master and not user.ready:
+                return False
+        return True
+
+    def generate_identity_cards(self):
+        self.identity_cards = []
+        self.identity_cards.append(
+            {
+                "identity": "master",
+                "selected": False,
+            }
+        )
+        for i in range(self.loyal_count):
+            self.identity_cards.append(
+                {
+                    "identity": "loyal",
+                    "selected": False,
+                }
+            )
+        for i in range(self.traitor_count):
+            self.identity_cards.append(
+                {
+                    "identity": "traitor",
+                    "selected": False,
+                }
+            )
+        for i in range(self.rebel_count):
+            self.identity_cards.append(
+                {
+                    "identity": "rebel",
+                    "selected": False,
+                }
+            )
+        # shuffle array
+        random.shuffle(self.identity_cards)
+
+    def generate_leader_pool(self):
+        self.master_leader_pool = random_leaders(self.master_leader_selected_count)
+        self.other_leader_pool = random_leaders(
+            self.other_leader_selected_count * len(self.users)
+        )
+
+    def draw_cards(self, count) -> list[dict]:
+        return random_cards(count)
+
+    def get_user_index(self, user) -> int:
+        return self.users.index(user)
+
+    def next_turn(self):
+        if self.turn_index != -1:
+            for user in self.users:
+                if user == self.turn_user():
+                    pass
+                    # leader_pool[user.leader["id"]].after_your_turn(user)
+                else:
+                    pass
+                    # leader_pool[user.leader["id"]].after_other_turn(
+                    #     user, self.turn_user()
+                    # )
+        self.turn_index += 1
+        self.turn_index = self.turn_index % len(self.users)
+        create_game_operate_history_for_turn_changed(
+            self.game_id, self.turn_user().socket_user.account
+        )
+        for user in self.users:
+            if user == self.turn_user():
+                pass
+                # leader_pool[user.leader["id"]].before_your_turn(user)
+            else:
+                pass
+                # leader_pool[user.leader["id"]].before_other_turn(user, self.turn_user())
+
+    def set_turn(self, account: str):
+        index = -1
+        for i, user in enumerate(self.users):
+            if user.account == account:
+                index = i
+                break
+        if index >= 0:
+            if self.turn_index != -1:
+                for user in self.users:
+                    if user == self.turn_user():
+                        pass
+                        # leader_pool[user.leader["id"]].after_your_turn(user)
+                    else:
+                        pass
+                        # leader_pool[user.leader["id"]].after_other_turn(
+                        #     user, self.turn_user()
+                        # )
+            self.turn_index = index
+            create_game_operate_history_for_turn_changed(
+                self.game_id, self.turn_user().socket_user.account
+            )
+            for user in self.users:
+                if user == self.turn_user():
+                    pass
+                    # leader_pool[user.leader["id"]].before_your_turn(user)
+                else:
+                    pass
+                    # leader_pool[user.leader["id"]].before_other_turn(
+                    #     user, self.turn_user()
+                    # )
+
+    def turn_user(self):
+        return self.users[self.turn_index]
+
+    def random_suit_and_rank(self) -> tuple[str, int]:
+        suit = random.choice(["spades", "hearts", "clubs", "diamonds"])
+        rank = random.randint(1, 13)
+        return suit, rank
 
 
-standard_rooms: dict[str, StandardRoom] = {}
+standard_rooms: dict[str, Room] = {}
 
 
-class SocketUserForStandardRoom(SocketUserForRoomInterface):
-    def __init__(self, socket_user: SocketUser) -> None:
-        super().__init__(socket_user)
+class SocketUserForStandardRoom:
+    def __init__(self, socket_user) -> None:
+        # Socket User
+        self.socket_user = socket_user
+        # 重置
+        self.reset_room()
+        self.reset_game()
+
+    def reset_room(self):
+        # 房间
+        self.room = None
+        # 是否房主
+        self.master: bool = False
+        # 是否准备
+        self.ready: bool = False
+
+    def reset_game(self):
+        # 身份
+        self.identity: str = "unknown"
+        # 将领
+        self.leader: dict = None
+        # 生命值
+        self.life: int = 0
+        # 武器
+        self.weapon: dict = None
+        # 装备
+        self.equipment: dict = None
+        # 马匹
+        self.horse: dict = None
+        # 附加状态列表
+        self.status_list: list[dict] = []
+        # 手上拿的卡
+        self.hand_cards: list[dict] = []
+
+    def send_ack(self, command: str, msg_id: str, info: dict):
+        self.socket_user.send_ack(command, msg_id, info)
+
+    def send_command(self, command: str, info: dict):
+        self.socket_user.send_command(command, info)
+
+    def select_leader(self, leader):
+        self.leader = leader
+        # leader_pool[self.leader["id"]].when_prepare(self)
+
+    # 你攻击别人的距离
+    def get_attack_distance(self) -> int:
+        attackable_range = 1
+        if self.weapon is not None:
+            pass
+            # attackable_range = card_pool[self.weapon["id"]].distance()
+        return attackable_range
+
+    # 你的距离位移
+    def get_distance_adjust(self) -> int:
+        attacked_range = 0
+        if self.horse is not None:
+            pass
+            # attacked_range = card_pool[self.horse["id"]].distance()
+        return attacked_range
 
     def on_request(self, msg_id: str, command: str, info: dict):
         if command == "create-room":
@@ -172,7 +404,7 @@ class SocketUserForStandardRoom(SocketUserForRoomInterface):
                 # 内存设置房主
                 self.master = True
                 # 初始化自己的房间
-                self.room = StandardRoom(info["room_id"])
+                self.room = Room(info["room_id"])
                 # 全局保存房间列表
                 standard_rooms[self.room.id] = self.room
                 # 将自己丢进去房间
@@ -536,7 +768,8 @@ class SocketUserForStandardRoom(SocketUserForRoomInterface):
             if user.leader is None:
                 return
         for user in self.room.users:
-            leader_pool[user.leader["id"]].after_everybody_prepare()
+            pass
+            # leader_pool[user.leader["id"]].after_everybody_prepare()
         self.room.broadcast("choose-leader-finished", {})
 
     # 选择将领
@@ -656,13 +889,13 @@ class SocketUserForStandardRoom(SocketUserForRoomInterface):
             if self.is_in_game(msg_id, "draw-cards"):
                 if self.is_your_turn(msg_id, "draw-cards"):
                     # 抽卡前
-                    leader_pool[self.leader["id"]].before_you_draw_card(self)
+                    # leader_pool[self.leader["id"]].before_you_draw_card(self)
                     # 抽卡
                     draw_cards = self.room.draw_cards(self.room.every_get_card_count)
                     for card in draw_cards:
                         self.hand_cards.append(card)
                     # 抽卡后
-                    leader_pool[self.leader["id"]].after_you_draw_card(self)
+                    # leader_pool[self.leader["id"]].after_you_draw_card(self)
                     # 回复
                     self.send_ack(
                         "draw-cards",

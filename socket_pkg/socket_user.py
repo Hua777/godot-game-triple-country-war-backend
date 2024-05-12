@@ -3,13 +3,9 @@ import uuid
 
 from autobahn.twisted.websocket import WebSocketServerProtocol
 
-from game.socket_user_for_room_interface import SocketUserInterface
 from game.socket_user_for_standard_room import SocketUserForStandardRoom
 
 from http_pkg.http_user import save_user_online_tag
-
-
-plugins = [SocketUserForStandardRoom]
 
 
 def parse_msg(data: bytes) -> tuple[str, str, str, dict]:
@@ -23,7 +19,7 @@ class SocketUser(WebSocketServerProtocol):
     def __init__(self) -> None:
         super().__init__()
         self.account: str = None
-        self.plugins: list[SocketUserInterface] = [plugin(self) for plugin in plugins]
+        self.plugins = [SocketUserForStandardRoom(self)]
 
     def onConnect(self, request):
         self.host = request.host
